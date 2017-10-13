@@ -1,0 +1,359 @@
+/*
+ * author: the5fire
+ * blog:  the5fire.com
+ * date: 2014-03-16
+ * */
+$(function() {
+    var socketManager = {};
+    var curTopicId = null;
+    var User = Backbone.Model.extend({
+        urlRoot: '/user',
+    });
+
+    var Topic = Backbone.Model.extend({
+        urlRoot: '/topic',
+    });
+
+    var Message = Backbone.Model.extend({
+        urlRoot: '/message',
+    });
+
+    var Topics = Backbone.Collection.extend({
+        url: '/topic',
+        model: Topic,
+    });
+    var topics = new Topics;
+
+    var Messages = Backbone.Collection.extend({
+        url: '/message',
+        model: Message,
+    });
+    var TopicView = Backbone.View.extend({
+        tagName: "div class='column'",
+        templ: _.template($('#topic-template').html()),
+
+        // 渲染列表页模板
+        render: function() {
+            $(this.el).html(this.templ(this.model.toJSON()));
+            return this;
+        },
+    });
+
+    var MessageView = Backbone.View.extend({
+        tagName: "div class='comment'",
+        templ: _.template($('#message-template').html()),
+
+        // 渲染列表页模板
+        render: function() {
+            $(this.el).html(this.templ(this.model.toJSON()));
+            return this;
+        },
+    });
+
+    var UserView = Backbone.View.extend({
+        el: "#user_info",
+        username: $('#username'),
+
+        show: function(username) {
+            this.username.html(username);
+            this.$el.show();
+        },
+    });
+
+
+    var AppView = Backbone.View.extend({
+        el: "#main",
+        topic_list: $("#topic_list"),
+        topic_section: $("#topic_section"),
+        message_section: $("#message_section"),
+        message_list: $("#message_list"),
+        message_head: $("#message_head"),
+
+        events: {
+            'click .submit': 'saveMessage', // 发送消息
+            'click .submit_topic': 'saveTopic', // 新建主题
+            'keypress #comment': 'saveMessageEvent', // 键盘事件
+        },
+        initialize: function() {
+            _.bindAll(this, 'addTopic', 'addMessage');
+
+            topics.bind('add', this.addTopic);
+
+            // 定义消息列表池，每个topic有自己的message collection
+            // 这样保证每个主题下得消息不冲突
+            this.message_pool = {};
+
+            this.message_list_div = document.getElementById('message_list');
+        },
+
+        addTopic: function(topic) {
+            console.log('!!!!!!!!!!!', topic);
+            var view = new TopicView({ model: topic });
+            this.topic_list.append(view.render().el);
+            //  $("#world-list").append("<li>这里是来自 <b>" + model.get('name') + "</b> 星球的问候：hello world！</li>");
+        },
+
+        addMessage: function(message) {
+            console.log(123);
+            var view = new MessageView({ model: message });
+            this.message_list.append(view.render().el);
+        },
+
+        saveMessageEvent: function(evt) {
+            if (evt.keyCode == 13) {
+                this.saveMessage(evt);
+            }
+        },
+        saveMessage: function(evt) {
+            var comment_box = $('#comment')
+            var content = comment_box.val();
+            if (content == '') {
+                alert('内容不能为空');
+                return false;
+            }
+            var topic_id = comment_box.attr('topic_id');
+            var message = new Message({
+                content: content,
+                topic_id: topic_id,
+            });
+            self = this;
+            var messages = this.message_pool[topic_id];
+            var client_data = {
+                content: content,
+                username: g_user.username
+            }
+            socketManager[topic_id].emit('client_data', client_data);
+            message.save(null, {
+                success: function(model, response, options) {
+                    comment_box.val('');
+                    // 重新获取，看服务器端是否有更新
+                    // 比较丑陋的更新机制
+                    messages.fetch({
+                        data: { topic_id: topic_id },
+                        success: function() {
+                            console.log(response);
+                            self.message_list.scrollTop(self.message_list_div.scrollHeight);
+                            messages.add(response);
+                        },
+                    });
+                },
+            });
+        },
+
+        saveTopic: function(evt) {
+            var topic_title = $('#topic_title');
+            if (topic_title.val() == '') {
+                alert('主题不能为空！');
+                return false
+            }
+            var topic = new Topic({
+                title: topic_title.val(),
+            });
+            self = this;
+            topic.save(null, {
+                success: function(model, response, options) {
+                    console.log(model, response, options);
+                    topics.add(response);
+                    topic_title.val('');
+                },
+            });
+        },
+
+        showTopic: function() {
+            // 获取所有主题
+            topics.fetch();
+            this.topic_section.show();
+            this.message_section.hide();
+            this.message_list.html('');
+        },
+
+        initMessage: function(topic_id) {
+            // 初始化消息集合，并放到消息池中
+            var messages = new Messages;
+            messages.bind('add', this.addMessage);
+            this.message_pool[topic_id] = messages;
+            console.log('初始化消息集合，并放到消息池中', this.message_pool);
+        },
+
+        showMessage: function(topic_id) {
+            this.initMessage(topic_id);
+
+            this.message_section.show();
+            this.topic_section.hide();
+
+            this.showMessageHead(topic_id);
+            $('#comment').attr('topic_id', topic_id);
+
+            var messages = this.message_pool[topic_id];
+            console.log(this.message_pool, messages);
+            messages.fetch({
+                data: { topic_id: topic_id },
+                success: function(resp) {
+                    self.message_list.scrollTop(self.message_list_div.scrollHeight)
+                }
+            });
+        },
+
+        showMessageHead: function(topic_id) {
+            var topic = new Topic({ id: topic_id });
+            self = this;
+            topic.fetch({
+                success: function(resp, model, options) {
+                    self.message_head.html(model.title);
+                }
+            });
+        },
+    });
+
+    var LoginView = Backbone.View.extend({
+        el: "#login",
+        wrapper: $('#wrapper'),
+
+        events: {
+            'keypress #login_pwd': 'loginEvent',
+            'click .login_submit': 'login',
+            'keypress #reg_pwd_repeat': 'registeEvent',
+            'click .registe_submit': 'registe',
+        },
+
+        hide: function() {
+            this.wrapper.hide();
+        },
+
+        show: function() {
+            this.wrapper.show();
+        },
+
+        loginEvent: function(evt) {
+            if (evt.keyCode == 13) {
+                this.login(evt);
+            }
+        },
+
+        login: function(evt) {
+            var username_input = $('#login_username');
+            var pwd_input = $('#login_pwd');
+            var u = new User({
+                username: username_input.val(),
+                password: pwd_input.val(),
+            });
+            u.save(null, {
+                url: '/login',
+                success: function(model, resp, options) {
+                    g_user = resp;
+                    // 跳转到index
+                    appRouter.navigate('index', { trigger: true });
+                }
+            });
+        },
+
+        registeEvent: function(evt) {
+            if (evt.keyCode == 13) {
+                this.registe(evt);
+            }
+        },
+
+        registe: function(evt) {
+            var reg_username_input = $('#reg_username');
+            var reg_pwd_input = $('#reg_pwd');
+            var reg_pwd_repeat_input = $('#reg_pwd_repeat');
+            var u = new User({
+                username: reg_username_input.val(),
+                password: reg_pwd_input.val(),
+                password_repeat: reg_pwd_repeat_input.val(),
+            });
+            u.save(null, {
+                success: function(model, resp, options) {
+                    g_user = resp;
+                    // 跳转到index
+                    appRouter.navigate('index', { trigger: true });
+                }
+            });
+        },
+    });
+
+    var AppRouter = Backbone.Router.extend({
+        routes: {
+            "login": "login",
+            "index": "index",
+            "topic/:id": "topic",
+        },
+
+        initialize: function() {
+            // 初始化项目, 显示首页
+            this.appView = new AppView();
+            this.loginView = new LoginView();
+            this.userView = new UserView();
+            this.indexFlag = false;
+        },
+
+        login: function() {
+            this.loginView.show();
+        },
+
+        index: function() {
+            if (g_user && g_user.id != undefined) {
+                this.appView.showTopic();
+                this.userView.show(g_user.username);
+                this.loginView.hide();
+                this.indexFlag = true; // 标志已经到达主页了
+            }
+        },
+
+        topic: function(topic_id) {
+            var self = this;
+            if (g_user && g_user.id != undefined) {
+                this.appView.showMessage(topic_id);
+                this.userView.show(g_user.username);
+                this.loginView.hide();
+                this.indexFlag = true; // 标志已经到达主页了
+            }
+            var topicRequest = new Topic({ topic_id: topic_id });
+            topicRequest.save(null, {
+                url: 'http://localhost:5000/message',
+                success: function(model, resp, options) {
+                    console.log(model, resp, options);
+                    socketManager[topic_id] = io.connect('http://localhost:5000/' + topic_id);
+                    socketManager[topic_id].on('connect', function(data) {
+                        curTopicId = topic_id;
+                    }).on('sever_data', function(data) {
+                        console.log(self.userView);
+                        var messages = self.appView.message_pool[topic_id];
+                        console.log(self.appView.message_pool, messages);
+                        var message = new Message({
+                            content: data.content,
+                            topic_id: topic_id,
+                            is_mine: false,
+                            id: 1,
+                            user_name: data.username,
+                            created_time: new Date().toLocaleString(),
+                        });
+                        var view = new MessageView({ model: message });
+                        self.appView.message_list.append(view.render().el);
+                        self.appView.message_list.scrollTop(self.appView.message_list_div.scrollHeight);
+
+                    })
+                },
+                error: function(model, resp, options) {
+                    console.log(model, resp, options);
+                }
+            });
+        },
+    });
+    var appRouter = new AppRouter();
+    var g_user = new User();
+    g_user.fetch({
+        success: function(model, resp, options) {
+            g_user = resp;
+            Backbone.history.start({ pustState: true });
+
+            if (g_user === null || g_user.id === undefined) {
+                // 跳转到登录页面
+                appRouter.navigate('login', { trigger: true });
+            } else if (appRouter.indexFlag == false) {
+                // 跳转到首页
+                appRouter.navigate('index', { trigger: true });
+            }
+        },
+    }); // 获
+});
